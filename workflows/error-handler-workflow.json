@@ -1,0 +1,74 @@
+{
+  "name": "Job Distribution Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format Error Details\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  const execution = d.execution || {};\n  const workflow = d.workflow || {};\n\n  const errorDetails = {\n    channel: 'System',\n    status: 'Failed',\n    timestamp: new Date().toISOString(),\n    response: JSON.stringify({\n      workflowName: workflow.name || 'Unknown',\n      executionId: execution.id || 'Unknown',\n      errorMessage: execution.error?.message || 'Unknown error',\n      errorNode: execution.lastNodeExecuted || 'Unknown',\n      stackTrace: execution.error?.stack || ''\n    }, null, 2),\n    formattedContent: `Workflow '${workflow.name}' failed at node '${execution.lastNodeExecuted}': ${execution.error?.message}`,\n    executionId: execution.id || 'Unknown'\n  };\n\n  console.log('=== ERROR HANDLER ===');\n  console.log(`Workflow: ${workflow.name}`);\n  console.log(`Error: ${execution.error?.message}`);\n  console.log(`Node: ${execution.lastNodeExecuted}`);\n  console.log('=====================');\n\n  return { json: errorDetails };\n});"
+      },
+      "id": "format-error",
+      "name": "Format Error Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Channel": "={{ $json.channel }}",
+            "Status": "={{ $json.status }}",
+            "Timestamp": "={{ $json.timestamp }}",
+            "Response": "={{ $json.response }}",
+            "Formatted Content": "={{ $json.formattedContent }}",
+            "Execution ID": "={{ $json.executionId }}"
+          }
+        }
+      },
+      "id": "log-error-airtable",
+      "name": "Log Error to Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable - Configure Me"
+        }
+      },
+      "notes": "Configure your Airtable base and select the 'Distribution Log' table."
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [{ "node": "Format Error Details", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Error Details": {
+      "main": [
+        [{ "node": "Log Error to Airtable", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "error-handler" },
+    { "name": "job-distribution" }
+  ],
+  "triggerCount": 1,
+  "pinData": {}
+}
