@@ -1,0 +1,27 @@
+# Environment files
+.env
+
+# n8n data volumes (Docker)
+docker/n8n-data/
+docker/postgres-data/
+
+# Node.js
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Claude
+.claude/
+CLAUDE.md
+
+# Personal notes
+CHEATSHEET.md
