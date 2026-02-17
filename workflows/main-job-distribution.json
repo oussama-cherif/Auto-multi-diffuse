@@ -1,0 +1,464 @@
+{
+  "name": "Job Post Multi-Channel Distribution",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [{ "mode": "everyMinute" }]
+        },
+        "additionalOptions": {
+          "formulaFilter": "{Status} = 'Ready to Distribute'"
+        }
+      },
+      "id": "airtable-trigger",
+      "name": "Airtable New Job Trigger",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable - Configure Me"
+        }
+      },
+      "notes": "Polls Airtable every minute for new records with Status = 'Ready to Distribute'. Configure your Base and Table in the node settings."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "job-distribute",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Job Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 560],
+      "webhookId": "job-distribute",
+      "notes": "POST to /webhook/job-distribute with JSON body. Test with Postman or any HTTP client."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Set trigger source for Airtable path\nconst items = $input.all();\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    triggerSource: 'airtable',\n    airtableRecordId: item.json.id || ''\n  }\n}));"
+      },
+      "id": "set-source-airtable",
+      "name": "Set Source Airtable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Set trigger source for Webhook path\n// Webhook v2 nests POST body under item.json.body\nconst items = $input.all();\nreturn items.map(item => ({\n  json: {\n    ...(item.json.body || item.json),\n    triggerSource: 'webhook',\n    airtableRecordId: ''\n  }\n}));"
+      },
+      "id": "set-source-webhook",
+      "name": "Set Source Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 560]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Normalize Job Data\n// Maps Airtable field names and webhook camelCase to consistent schema\n\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n\n  const normalized = {\n    title:            d.Title        || d.title        || 'Poste sans titre',\n    company:          d.Company      || d.company      || 'Entreprise non spécifiée',\n    description:      d.Description  || d.description  || '',\n    requirements:     d.Requirements || d.requirements || '',\n    salary:           d.Salary       || d.salary       || 'Compétitif',\n    location:         d.Location     || d.location     || 'Non spécifié',\n    jobType:          d['Job Type']  || d.jobType      || 'CDI',\n    applyUrl:         d['Apply URL'] || d.applyUrl     || '#',\n    category:         d.Category     || d.category     || 'Tech',\n    triggerSource:    d.triggerSource,\n    airtableRecordId: d.airtableRecordId || d.id || '',\n    executionId:      $execution.id,\n    processedAt:      new Date().toISOString()\n  };\n\n  return { json: normalized };\n});"
+      },
+      "id": "normalize-data",
+      "name": "Normalize Job Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Validate Job Data\n// Checks required fields and data quality\n\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  const errors = [];\n\n  if (!d.title || d.title === 'Poste sans titre') {\n    errors.push('Le titre est requis');\n  }\n  if (!d.company || d.company === 'Entreprise non spécifiée') {\n    errors.push('L\\'entreprise est requise');\n  }\n  if (!d.description || d.description.length < 20) {\n    errors.push('La description doit contenir au moins 20 caractères');\n  }\n  if (d.applyUrl && d.applyUrl !== '#') {\n    try {\n      new URL(d.applyUrl);\n    } catch {\n      errors.push('L\\'URL de candidature n\\'est pas valide');\n    }\n  }\n\n  const validCategories = ['Tech', 'Creative', 'Executive'];\n  const category = d.category.charAt(0).toUpperCase() + d.category.slice(1).toLowerCase();\n\n  return {\n    json: {\n      ...d,\n      category: validCategories.includes(category) ? category : 'Tech',\n      isValid: errors.length === 0,\n      validationErrors: errors\n    }\n  };\n});"
+      },
+      "id": "validate-data",
+      "name": "Validate Job Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.isValid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-valid",
+      "name": "IF Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Select Template\n// Attaches category-based template configuration\n\nconst items = $input.all();\n\nconst templates = {\n  Tech: {\n    tone: 'technical',\n    emoji: { primary: '\\u{1F680}', secondary: '\\u{1F4BB}', accent: '\\u2699\\uFE0F' },\n    hashtags: ['#Emploi', '#Développeur', '#Recrutement', '#Télétravail', '#Tech'],\n    emailAccent: '#2563EB',\n    linkedinStyle: 'axé données avec détails techniques'\n  },\n  Creative: {\n    tone: 'creative',\n    emoji: { primary: '\\u{1F3A8}', secondary: '\\u270D\\uFE0F', accent: '\\u2728' },\n    hashtags: ['#EmploiCréatif', '#Design', '#Recrutement', '#Créatif', '#Opportunité'],\n    emailAccent: '#7C3AED',\n    linkedinStyle: 'inspirant et visuellement descriptif'\n  },\n  Executive: {\n    tone: 'executive',\n    emoji: { primary: '\\u{1F4BC}', secondary: '\\u{1F3AF}', accent: '\\u{1F451}' },\n    hashtags: ['#Direction', '#Leadership', '#Recrutement', '#Cadre', '#Management'],\n    emailAccent: '#0F172A',\n    linkedinStyle: 'stratégique et visionnaire'\n  }\n};\n\nreturn items.map(item => {\n  const category = item.json.category || 'Tech';\n  return {\n    json: {\n      ...item.json,\n      template: templates[category] || templates.Tech\n    }\n  };\n});"
+      },
+      "id": "select-template",
+      "name": "Select Template",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 340]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format LinkedIn Post\n// Professional long-form format with emojis and hashtags\n\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  const t = d.template;\n\n  const requirementsList = d.requirements\n    .split('\\n')\n    .filter(r => r.trim())\n    .map(r => `  \\u2022 ${r.trim()}`)\n    .join('\\n');\n\n  const linkedinPost = `${t.emoji.primary} Nous recrutons : ${d.title} chez ${d.company} !\n\n${d.description}\n\n${t.emoji.accent} Profil recherché :\n${requirementsList}\n\n${t.emoji.secondary} Détails :\n\\u{1F4CD} Lieu : ${d.location}\n\\u{1F4B0} Salaire : ${d.salary}\n\\u23F0 Contrat : ${d.jobType}\n\nIntéressé(e) ? Postulez maintenant : ${d.applyUrl}\n\n${t.hashtags.slice(0, 3).join(' ')}\n\n#${d.company.replace(/\\s+/g, '')} #OnRecrute`;\n\n  const linkedinResult = {\n    platform: 'LinkedIn',\n    status: 'Simulated',\n    simulatedPostId: `li_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n    characterCount: linkedinPost.length,\n    content: linkedinPost,\n    timestamp: new Date().toISOString(),\n    note: 'SIMULATED: LinkedIn API requires OAuth2 app approval.'\n  };\n\n  console.log('=== LINKEDIN POST (SIMULATED) ===');\n  console.log(linkedinPost);\n  console.log('=================================');\n\n  return {\n    json: {\n      ...d,\n      linkedinPost,\n      linkedinResult\n    }\n  };\n});"
+      },
+      "id": "format-linkedin",
+      "name": "Format LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 180]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format Twitter/X Post\n// 280-character constrained tweet with hashtags\n\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  const t = d.template;\n\n  const hashtags = t.hashtags.slice(0, 2).join(' ');\n  const headline = `${t.emoji.primary} On recrute : ${d.title} chez ${d.company} !`;\n  const details = `${d.location} | ${d.jobType} | ${d.salary}`;\n  const cta = 'Postulez :';\n  const tcoLength = 23;\n\n  const fullTweet = `${headline}\\n${details}\\n\\n${cta} ${d.applyUrl}\\n\\n${hashtags}`;\n  const fullLength = headline.length + 1 + details.length + 2 + cta.length + 1 + tcoLength + 2 + hashtags.length;\n\n  let tweet;\n  if (fullLength <= 280) {\n    tweet = fullTweet;\n  } else {\n    const shortDetails = `${d.location} | ${d.jobType}`;\n    tweet = `${headline}\\n${shortDetails}\\n\\n${cta} ${d.applyUrl}\\n\\n${hashtags}`;\n  }\n\n  if (tweet.length > 280) {\n    tweet = tweet.substring(0, 277) + '...';\n  }\n\n  const twitterResult = {\n    platform: 'Twitter',\n    status: 'Simulated',\n    simulatedTweetId: `tw_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,\n    characterCount: tweet.length,\n    withinLimit: tweet.length <= 280,\n    content: tweet,\n    timestamp: new Date().toISOString(),\n    note: 'SIMULATED: Twitter/X API requires paid tier.'\n  };\n\n  console.log('=== TWITTER POST (SIMULATED) ===');\n  console.log(tweet);\n  console.log(`Characters: ${tweet.length}/280`);\n  console.log('================================');\n\n  return {\n    json: {\n      ...d,\n      twitterPost: tweet,\n      twitterResult\n    }\n  };\n});"
+      },
+      "id": "format-twitter",
+      "name": "Format Twitter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format Email\n// Responsive HTML email with category-specific accent colors\n\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  const t = d.template;\n\n  const requirementsHtml = d.requirements\n    .split('\\n')\n    .filter(r => r.trim())\n    .map(r => `<li style=\"margin-bottom:6px;\">${r.trim()}</li>`)\n    .join('');\n\n  const emailHtml = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n</head>\n<body style=\"margin:0;padding:0;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;\">\n  <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;margin:0 auto;background:#ffffff;\">\n    <tr>\n      <td style=\"background:${t.emailAccent};padding:32px 24px;text-align:center;\">\n        <h1 style=\"color:#ffffff;margin:0;font-size:24px;\">Nouvelle opportunité d'emploi</h1>\n      </td>\n    </tr>\n    <tr>\n      <td style=\"padding:24px;\">\n        <h2 style=\"color:#1a1a2e;margin:0 0 8px;\">${d.title}</h2>\n        <p style=\"color:#6b7280;margin:0;font-size:16px;\">${d.company} &bull; ${d.location}</p>\n      </td>\n    </tr>\n    <tr>\n      <td style=\"padding:0 24px;\">\n        <table width=\"100%\" cellpadding=\"8\" style=\"background:#f9fafb;border-radius:8px;\">\n          <tr>\n            <td style=\"text-align:center;border-right:1px solid #e5e7eb;\">\n              <strong style=\"color:#374151;font-size:13px;\">Contrat</strong><br>\n              <span style=\"color:#6b7280;font-size:13px;\">${d.jobType}</span>\n            </td>\n            <td style=\"text-align:center;border-right:1px solid #e5e7eb;\">\n              <strong style=\"color:#374151;font-size:13px;\">Salaire</strong><br>\n              <span style=\"color:#6b7280;font-size:13px;\">${d.salary}</span>\n            </td>\n            <td style=\"text-align:center;\">\n              <strong style=\"color:#374151;font-size:13px;\">Lieu</strong><br>\n              <span style=\"color:#6b7280;font-size:13px;\">${d.location}</span>\n            </td>\n          </tr>\n        </table>\n      </td>\n    </tr>\n    <tr>\n      <td style=\"padding:24px;\">\n        <h3 style=\"color:#1a1a2e;margin:0 0 12px;\">À propos du poste</h3>\n        <p style=\"color:#4b5563;line-height:1.6;margin:0;\">${d.description}</p>\n      </td>\n    </tr>\n    <tr>\n      <td style=\"padding:0 24px 24px;\">\n        <h3 style=\"color:#1a1a2e;margin:0 0 12px;\">Prérequis</h3>\n        <ul style=\"color:#4b5563;line-height:1.8;margin:0;padding-left:20px;\">\n          ${requirementsHtml}\n        </ul>\n      </td>\n    </tr>\n    <tr>\n      <td style=\"padding:0 24px 32px;text-align:center;\">\n        <a href=\"${d.applyUrl}\" style=\"display:inline-block;background:${t.emailAccent};color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:6px;font-weight:bold;font-size:16px;\">Postuler maintenant</a>\n      </td>\n    </tr>\n    <tr>\n      <td style=\"padding:16px 24px;background:#f9fafb;text-align:center;\">\n        <p style=\"color:#9ca3af;font-size:12px;margin:0;\">\n          Notification automatique du système de distribution d'offres d'emploi<br>\n          Propulsé par n8n Workflow Automation\n        </p>\n      </td>\n    </tr>\n  </table>\n</body>\n</html>`;\n\n  const emailSubject = `Nouvelle opportunité : ${d.title} chez ${d.company} (${d.location})`;\n\n  return {\n    json: {\n      ...d,\n      emailHtml,\n      emailSubject\n    }\n  };\n});"
+      },
+      "id": "format-email",
+      "name": "Format Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 660]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Log LinkedIn Result for Distribution Log\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  return {\n    json: {\n      channel: 'LinkedIn',\n      status: d.linkedinResult?.status || 'Simulated',\n      timestamp: d.linkedinResult?.timestamp || new Date().toISOString(),\n      response: JSON.stringify(d.linkedinResult || {}, null, 2),\n      formattedContent: d.linkedinPost || '',\n      executionId: d.executionId,\n      airtableRecordId: d.airtableRecordId,\n      jobTitle: d.title\n    }\n  };\n});"
+      },
+      "id": "log-linkedin",
+      "name": "Log LinkedIn Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 180]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Log Twitter Result for Distribution Log\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  return {\n    json: {\n      channel: 'Twitter',\n      status: d.twitterResult?.status || 'Simulated',\n      timestamp: d.twitterResult?.timestamp || new Date().toISOString(),\n      response: JSON.stringify(d.twitterResult || {}, null, 2),\n      formattedContent: d.twitterPost || '',\n      executionId: d.executionId,\n      airtableRecordId: d.airtableRecordId,\n      jobTitle: d.title\n    }\n  };\n});"
+      },
+      "id": "log-twitter",
+      "name": "Log Twitter Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Log Email Result for Distribution Log\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  return {\n    json: {\n      channel: 'Email',\n      status: 'Success',\n      timestamp: new Date().toISOString(),\n      response: 'Email sent successfully via Gmail',\n      formattedContent: d.emailSubject || '',\n      executionId: d.executionId,\n      airtableRecordId: d.airtableRecordId,\n      jobTitle: d.title\n    }\n  };\n});"
+      },
+      "id": "log-email",
+      "name": "Log Email Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1940, 660]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.emailTo || 'your-email@example.com' }}",
+        "subject": "={{ $json.emailSubject }}",
+        "emailType": "html",
+        "message": "={{ $json.emailHtml }}"
+      },
+      "id": "send-email",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1700, 660],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail - Configure Me"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Configure your Gmail OAuth2 credentials and set the recipient email address."
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 3
+      },
+      "id": "merge-results",
+      "name": "Merge All Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1960, 340]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Channel": "={{ $json.channel }}",
+            "Status": "={{ $json.status }}",
+            "Timestamp": "={{ $json.timestamp }}",
+            "Response": "={{ $json.response }}",
+            "Formatted Content": "={{ $json.formattedContent }}",
+            "Execution ID": "={{ $json.executionId }}"
+          }
+        }
+      },
+      "id": "write-logs",
+      "name": "Write Distribution Logs",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2200, 340],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable - Configure Me"
+        }
+      },
+      "notes": "Configure your Airtable base and select the 'Distribution Log' table."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build Distribution Report\n// Read directly from Merge output (before Airtable transforms the data)\n\nconst items = $('Merge All Results').all();\n\nconst results = items.map(item => item.json);\n\nconst succeeded = results.filter(r => r.status === 'Success' || r.status === 'Simulated');\nconst failed = results.filter(r => r.status === 'Failed');\n\nlet overallStatus;\nif (failed.length === 0) {\n  overallStatus = 'Distributed';\n} else if (succeeded.length === 0) {\n  overallStatus = 'Failed';\n} else {\n  overallStatus = 'Partial';\n}\n\nconst summary = {\n  jobTitle: results[0]?.jobTitle || 'Unknown',\n  totalChannels: results.length,\n  succeeded: succeeded.length,\n  failed: failed.length,\n  channels: results.map(r => ({\n    channel: r.channel,\n    status: r.status\n  })),\n  overallStatus,\n  completedAt: new Date().toISOString(),\n  airtableRecordId: results[0]?.airtableRecordId || '',\n  executionId: results[0]?.executionId || ''\n};\n\nconsole.log('=== DISTRIBUTION SUMMARY ===');\nconsole.log(`Job: ${summary.jobTitle}`);\nconsole.log(`Status: ${summary.overallStatus}`);\nconsole.log(`Channels: ${summary.succeeded}/${summary.totalChannels} succeeded`);\nconsole.log('============================');\n\nreturn [{ json: summary }];"
+      },
+      "id": "build-report",
+      "name": "Build Summary Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "" },
+          "conditions": [
+            {
+              "id": "has-record-id",
+              "leftValue": "={{ $json.airtableRecordId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-has-record",
+      "name": "IF Has Airtable Record",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2660, 280]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "={{ $json.overallStatus }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-status",
+      "name": "Update Job Status",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [2900, 220],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable - Configure Me"
+        }
+      },
+      "notes": "Configure your Airtable base and select the 'Job Postings' table. The Record ID comes from the airtableRecordId field."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2900, 420]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Log validation error\nconst items = $input.all();\n\nreturn items.map(item => {\n  const d = item.json;\n  console.log('VALIDATION FAILED:', d.validationErrors);\n  return {\n    json: {\n      error: true,\n      message: `Validation failed: ${d.validationErrors.join(', ')}`,\n      validationErrors: d.validationErrors,\n      title: d.title,\n      executionId: d.executionId\n    }\n  };\n});"
+      },
+      "id": "log-validation-error",
+      "name": "Log Validation Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 560]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: true, message: $json.message, validationErrors: $json.validationErrors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-webhook-error",
+      "name": "Respond Webhook Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 560]
+    }
+  ],
+  "connections": {
+    "Airtable New Job Trigger": {
+      "main": [
+        [{ "node": "Set Source Airtable", "type": "main", "index": 0 }]
+      ]
+    },
+    "Webhook Job Trigger": {
+      "main": [
+        [{ "node": "Set Source Webhook", "type": "main", "index": 0 }]
+      ]
+    },
+    "Set Source Airtable": {
+      "main": [
+        [{ "node": "Normalize Job Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Set Source Webhook": {
+      "main": [
+        [{ "node": "Normalize Job Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize Job Data": {
+      "main": [
+        [{ "node": "Validate Job Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate Job Data": {
+      "main": [
+        [{ "node": "IF Valid", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF Valid": {
+      "main": [
+        [{ "node": "Select Template", "type": "main", "index": 0 }],
+        [{ "node": "Log Validation Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Select Template": {
+      "main": [
+        [
+          { "node": "Format LinkedIn", "type": "main", "index": 0 },
+          { "node": "Format Twitter", "type": "main", "index": 0 },
+          { "node": "Format Email", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Format LinkedIn": {
+      "main": [
+        [{ "node": "Log LinkedIn Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Twitter": {
+      "main": [
+        [{ "node": "Log Twitter Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Email": {
+      "main": [
+        [{ "node": "Send Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [{ "node": "Log Email Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log LinkedIn Result": {
+      "main": [
+        [{ "node": "Merge All Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Twitter Result": {
+      "main": [
+        [{ "node": "Merge All Results", "type": "main", "index": 1 }]
+      ]
+    },
+    "Log Email Result": {
+      "main": [
+        [{ "node": "Merge All Results", "type": "main", "index": 2 }]
+      ]
+    },
+    "Merge All Results": {
+      "main": [
+        [{ "node": "Write Distribution Logs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Write Distribution Logs": {
+      "main": [
+        [{ "node": "Build Summary Report", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Summary Report": {
+      "main": [
+        [
+          { "node": "IF Has Airtable Record", "type": "main", "index": 0 },
+          { "node": "Respond to Webhook", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "IF Has Airtable Record": {
+      "main": [
+        [{ "node": "Update Job Status", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Log Validation Error": {
+      "main": [
+        [{ "node": "Respond Webhook Error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "job-distribution" },
+    { "name": "automation" },
+    { "name": "portfolio" }
+  ],
+  "triggerCount": 2,
+  "pinData": {}
+}
